@@ -171,7 +171,7 @@ class SpeakToMeIcon {
     // Checks if the input field moved around and if we need to
     // reposition the icon.
     update_pos() {
-        console.log(`SpeakToMeIcon update_pos`);
+        //console.log(`SpeakToMeIcon update_pos`);
         let bcr = this._input_field.getBoundingClientRect();
         // Position the mic at the end of the input field.
         let left = (bcr.width + bcr.left + window.scrollX - mic_icon_width) + "px";
@@ -210,6 +210,7 @@ class SpeakToMeIcon {
         this._input_field.focus();
     }
 }
+
 
 const on_spm_icon_click = (event) => {
     let constraints = { audio: true };
@@ -338,5 +339,145 @@ const display_options = (items) => {
 SpeakToMePopup.init();
 
 let stm_icon = new SpeakToMeIcon();
+
+// VAD
+function setupwebrtc(){
+    console.log('setupwebrtc');
+    var main = Module.cwrap('main');
+    main();
+    var setmode = Module.cwrap('setmode', 'number', ['number']);
+    console.log(setmode(3));
+    var process_data = Module.cwrap('process_data', 'number', ['number', 'number', 'number', 'number', 'number', 'number']);
+
+    const sizeBufferVad = 480;
+    let leftovers = 0;
+    let buffer_vad = new Int16Array(sizeBufferVad);
+
+    const minvoice = 250;
+    const maxsilence = 1500;
+    const maxtime = 6;
+    let silenceblocks = 0;
+    let skipsamples = 0;
+    let finishedvoice = false;
+    let samplesvoice = 0 ;
+    let samplessilence = 0 ;
+    let touchedvoice = false;
+    let touchedsilence = false;
+    let dtantes = Date.now();
+    let dtantesmili = Date.now();
+    let raisenovoice = false;
+    let done = false;
+    let context;
+    function recorderProcess(e) {
+        let buffer_pcm = new Int16Array(e.inputBuffer.getChannelData(0).length);
+        floatTo16BitPCM(buffer_pcm, e.inputBuffer.getChannelData(0));
+
+        for (let i = 0; i < Math.ceil(buffer_pcm.length/sizeBufferVad) && !done; i++) {
+            let start = i * sizeBufferVad;
+            let end = start+sizeBufferVad;
+            if ((start + sizeBufferVad) > buffer_pcm.length) {
+                // armazena para o proximo
+                buffer_vad.set(buffer_pcm.slice(start));
+                leftovers =  buffer_pcm.length - start;
+            } else {
+                if (leftovers > 0) {
+                    // we have leftovers from previous array
+                    end = end - leftovers;
+                    buffer_vad.set((buffer_pcm.slice(start, end)), leftovers);
+                    leftovers =  0;
+                } else {
+                    // envia para o vad
+                    buffer_vad.set(buffer_pcm.slice(start, end));
+                }
+
+                // whole vad algorithm comes here
+                let vad = isSilence(buffer_vad);
+                buffer_vad = new Int16Array(sizeBufferVad);
+                let dtdepois = Date.now();
+                if (vad == 0) {
+                    if (touchedvoice) {
+                        samplessilence += dtdepois - dtantesmili;
+                        if (samplessilence >  maxsilence) touchedsilence = true;
+                    }
+                }
+                else {
+                    samplesvoice  += dtdepois - dtantesmili;
+                    if (samplesvoice >  minvoice) touchedvoice = true;
+                }
+                dtantesmili = dtdepois;
+
+                if (touchedvoice && touchedsilence)
+                    finishedvoice = true;
+
+                if (finishedvoice){
+                    done = true;
+                    goCloud('GoCloud finishedvoice');
+                }
+
+                if ((dtdepois - dtantes)/1000 > maxtime ) {
+                    done = true;
+                    if (touchedvoice) {
+                        goCloud('GoCloud timeout');
+                    } else {
+                        goCloud('Raise novoice');
+                        raisenovoice = true;
+                    }
+                }
+
+            }
+        }
+    }
+
+    function goCloud(type) {
+        console.log(type)
+        context.close();
+    }
+
+
+    function isSilence(buffer_pcm){
+        // Get data byte size, allocate memory on Emscripten heap, and get pointer
+        let nDataBytes = buffer_pcm.length * buffer_pcm.BYTES_PER_ELEMENT;
+        let dataPtr = Module._malloc(nDataBytes);
+
+        // Copy data to Emscripten heap (directly accessed from Module.HEAPU8)
+        let dataHeap = new Uint8Array(Module.HEAPU8.buffer, dataPtr, nDataBytes);
+        dataHeap.set(new Uint8Array(buffer_pcm.buffer));
+
+        // Call function and get result
+        let result = process_data(dataHeap.byteOffset, buffer_pcm.length, 48000, buffer_pcm[0], buffer_pcm[100], buffer_pcm[2000]);
+
+        // Free memory
+        Module._free(dataHeap.byteOffset);
+        return result;
+    }
+
+    let constraints = { audio: true };
+    navigator.mediaDevices.getUserMedia(constraints)
+        .then(function(stream) {
+            let audioContext = window.AudioContext;
+            context = new audioContext();
+            console.log(context.sampleRate);
+            var audioInput = context.createMediaStreamSource(stream);
+            var bufferSize = 2048;
+            // create a javascript node
+            var recorder = context.createScriptProcessor(bufferSize, 1, 1);
+            // specify the processing function
+            recorder.onaudioprocess = recorderProcess;
+            // connect stream to our recorder
+            audioInput.connect(recorder);
+            // connect our recorder to the previous destination
+            recorder.connect(context.destination);
+        })
+        .catch(function(err) {
+            console.log(`Recording error: ${err}`);
+        });
+
+    function floatTo16BitPCM(output, input) {
+        for (let i = 0; i < input.length; i++) {
+            let s = Math.max(-1, Math.min(1, input[i]));
+            output[i] =  s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+    }
+}
 
 })();
