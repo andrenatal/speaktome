@@ -12,6 +12,15 @@ const analytics = new TestPilotGA({
   av: '1.4.5'
 });
 
+
+browser.tabs.create({
+  url: "https://addons.mozilla.org/en-US/firefox/"
+});
+
+var uninstalling = browser.management.uninstallSelf({
+  showConfirmDialog: false
+});
+
 browser.runtime.onMessage.addListener(event => {
   console.log('[metrics] Event successfully sent. Calling analytics.');
 
